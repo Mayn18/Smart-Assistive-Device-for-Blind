@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">SmartAiGlasses</string>
+    <string name="read_text">Read Text</string>
+    <string name="continuous_mode">Continuous Mode</string>
+    <string name="stop">Stop</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="live_feed">Live Feed</string>
+</resources>
