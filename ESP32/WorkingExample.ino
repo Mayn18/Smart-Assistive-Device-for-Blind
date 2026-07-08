@@ -8,6 +8,7 @@
 #include "esp_http_server.h"
 #include "esp_pm.h"
 #include "esp_wifi.h"
+#include "secrets.h"
 
 #define BUTTON_IO13 13
 
@@ -26,21 +27,6 @@ bool continuousMode = false;
 
 // -------- Marker Command --------
 const char* pendingCommand = NULL;
-
-// ---------- WiFi Credentials ----------
-struct WiFiCred {
-  const char* ssid;
-  const char* password;
-};
-
-const WiFiCred networks[] = {
-  {"REDACTED_SSID",    "REDACTED"},
-  {"REDACTED_SSID",       "REDACTED"},
-  {"REDACTED_SSID",  "REDACTED"},
-  {"REDACTED_SSID","REDACTED"}
-};
-
-const int networkCount = sizeof(networks) / sizeof(networks[0]);
 
 // ---------- UDP ----------
 WiFiUDP udp;
