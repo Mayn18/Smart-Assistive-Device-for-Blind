@@ -8,6 +8,8 @@ A prototype that pairs an ESP32-CAM with an Android app to capture printed text,
 - The Android app discovers the device by UDP, with `esp32cam.local` and the ESP32 soft-AP address as fallbacks.
 - The camera button sends `READ`, `CONT`, and `STOP` events over a WebSocket on port 81.
 - Android runs ML Kit text recognition and Android Text-to-Speech. Translation is optional and may need a model download.
+- The app starts in clearly labeled Simulation mode with a bundled printed-text image. It runs the same OCR and speech flow without attempting a device connection; uncheck Simulation mode to search for a real ESP32-CAM.
+- Real-device discovery is reported as connected only after the firmware `/health` endpoint responds with the expected device identity.
 
 This repository does not currently implement object detection, navigation assistance, voice commands, reading history, or a guided setup flow.
 
@@ -29,7 +31,16 @@ From `android/` run:
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-The automated unit tests cover text cleanup and speech suppression. Camera streaming, Wi-Fi discovery, OCR quality, translation, and speech should also be checked on real hardware.
+The automated unit tests cover text cleanup, speech suppression, and WebSocket event parsing. The bundled OCR sample can be exercised on an Android device or emulator in Simulation mode. Camera streaming, Wi-Fi discovery, OCR quality, translation downloads, and speech output should also be checked on real hardware; host-side unit tests do not validate those integrations.
+
+Firmware can be compiled without a board using PlatformIO from the repository root:
+
+```sh
+cp -n ESP32/secrets.h.example ESP32/secrets.h
+pio run -e esp32cam
+```
+
+The sample credentials are compile-only placeholders; replace them only in your ignored local `ESP32/secrets.h` before flashing.
 
 ## Limitations and safety
 

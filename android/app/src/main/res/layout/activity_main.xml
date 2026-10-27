@@ -17,13 +17,24 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>
 
+    <CheckBox
+        android:id="@+id/checkSimulationMode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:checked="true"
+        android:text="@string/simulation_mode"
+        android:textColor="#FFFFFF"
+        app:layout_constraintTop_toBottomOf="@id/txtStatus"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
+
     <TextView
         android:id="@+id/txtLanguage"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:textColor="#00E5FF"
         android:textSize="13sp"
-        app:layout_constraintTop_toBottomOf="@id/txtStatus"
+        app:layout_constraintTop_toBottomOf="@id/checkSimulationMode"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"/>
 
@@ -32,7 +43,7 @@
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:background="#000000"
-        android:contentDescription="@string/live_feed"
+        android:contentDescription="@string/image_preview"
         android:scaleType="fitCenter"
         app:layout_constraintTop_toBottomOf="@id/txtLanguage"
         app:layout_constraintBottom_toTopOf="@id/btnRead"

@@ -4,7 +4,7 @@ The protocol is a prototype contract shared by `ESP32/WorkingExample.ino` and th
 
 ## Discovery
 
-Android broadcasts the UTF-8 message `WHO_IS_ESP32_CAM` over UDP port `4210`. The ESP32 replies to the sender with `ESP32_CAM:<ip-address>`. If discovery fails, Android tries `esp32cam.local` and then `192.168.4.1` for the ESP32 soft AP.
+Android broadcasts the UTF-8 message `WHO_IS_ESP32_CAM` over UDP port `4210`. The ESP32 replies to the sender with `ESP32_CAM:<ip-address>`. Android accepts only a valid IPv4 address from the reply. If discovery fails, Android tries `esp32cam.local` and then `192.168.4.1` for the ESP32 soft AP. Each candidate must return a successful `/health` response identifying itself as `smart-assistive-reader` before the UI reports a connection.
 
 ## HTTP endpoints
 

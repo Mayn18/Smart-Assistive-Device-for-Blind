@@ -14,7 +14,7 @@ This is an experimental local-network prototype, not a hardened connected device
 - Store Wi-Fi credentials in the ignored `ESP32/secrets.h` file; never commit that file.
 - The app performs OCR on-device. Translation can download a model; this project has no application backend.
 - The app does not intentionally retain recognized text as reading history.
-- The project history may have contained credentials. Treat any previously committed Wi-Fi password as exposed and rotate it; deleting it from the latest revision does not remove it from Git history.
+- A scan of repository history found likely Wi-Fi credential literals in older firmware revisions. Rotate any Wi-Fi credentials that may have been used with this project; deleting them from the latest revision does not remove them from Git history.
 
 ## Safety boundary
 

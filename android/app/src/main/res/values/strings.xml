@@ -4,5 +4,25 @@
     <string name="continuous_mode">Continuous Mode</string>
     <string name="stop">Stop</string>
     <string name="disconnected">Disconnected</string>
-    <string name="live_feed">Live Feed</string>
+    <string name="image_preview">Camera feed or OCR sample image</string>
+    <string name="simulation_mode">Simulation mode (no ESP32 connection)</string>
+    <string name="simulation_ready">SIMULATION — sample image ready. Press Read or Continuous.</string>
+    <string name="simulation_badge">SIMULATION MODE — no camera/device connection</string>
+    <string name="searching_device">Searching for ESP32…</string>
+    <string name="checking_device">Checking ESP32 at %1$s…</string>
+    <string name="device_connected">Connected to ESP32 at %1$s. Press Read or Continuous.</string>
+    <string name="device_unavailable">ESP32 not found. Check the local network or switch to Simulation mode.</string>
+    <string name="sample_unavailable">Simulation sample image could not be loaded.</string>
+    <string name="simulated_read">SIMULATION — reading sample image</string>
+    <string name="simulated_continuous">SIMULATION — continuous reading</string>
+    <string name="simulated_stopped">SIMULATION — stopped</string>
+    <string name="device_read">ESP32 button: Read</string>
+    <string name="device_continuous">ESP32 button: Continuous</string>
+    <string name="device_stopped">ESP32 button: Stop</string>
+    <string name="found_text">Found: %1$s</string>
+    <string name="speaking_text">Speaking: %1$s</string>
+    <string name="processing_failed">Processing failed: %1$s</string>
+    <string name="speaking_recognized_text">Speaking recognized text (translation unavailable): %1$s</string>
+    <string name="stream_retrying">ESP32 stream unavailable; retrying…</string>
+    <string name="no_text_detected">No readable text detected in this image.</string>
 </resources>

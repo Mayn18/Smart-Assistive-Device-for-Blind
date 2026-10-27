@@ -1,6 +1,7 @@
 package com.example.smartaiglasses.ocr
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.*
 import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
@@ -8,10 +9,13 @@ import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
 import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.tasks.await
+
+private const val TAG = "OCRProcessor"
 
 class OCRProcessor {
 
@@ -34,14 +38,27 @@ class OCRProcessor {
         val image = InputImage.fromBitmap(bitmap, 0)
 
         val results = awaitAll(
-            async { runCatching { latinRec.process(image).await() }.getOrNull() },
-            async { runCatching { devanagariRec.process(image).await() }.getOrNull() },
-            async { runCatching { chineseRec.process(image).await() }.getOrNull() },
-            async { runCatching { japaneseRec.process(image).await() }.getOrNull() },
-            async { runCatching { koreanRec.process(image).await() }.getOrNull() }
+            async { recognize("Latin", latinRec, image) },
+            async { recognize("Devanagari", devanagariRec, image) },
+            async { recognize("Chinese", chineseRec, image) },
+            async { recognize("Japanese", japaneseRec, image) },
+            async { recognize("Korean", koreanRec, image) }
         )
 
         results.filterNotNull().maxByOrNull { scoreResult(it) }
+    }
+
+    private suspend fun recognize(
+        script: String,
+        recognizer: TextRecognizer,
+        image: InputImage
+    ): Text? = try {
+        recognizer.process(image).await()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "$script text recognition failed", e)
+        null
     }
 
     private fun scoreResult(r: Text): Float {

@@ -5,13 +5,16 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.concurrent.TimeUnit
 
 class DeviceEventClient {
 
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(3, TimeUnit.SECONDS)
+        .build()
     private var webSocket: WebSocket? = null
 
-    fun connect(ip: String, onCommand: (String) -> Unit) {
+    fun connect(ip: String, onCommand: (DeviceEventCommand) -> Unit) {
         close()
         val request = Request.Builder()
             .url("ws://$ip:81/")
@@ -19,13 +22,13 @@ class DeviceEventClient {
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text == "READ" || text == "CONT" || text == "STOP") {
-                    onCommand(text)
-                }
+                DeviceEventCommand.parse(text)?.let(onCommand)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                this@DeviceEventClient.webSocket = null
+                if (this@DeviceEventClient.webSocket === webSocket) {
+                    this@DeviceEventClient.webSocket = null
+                }
             }
         })
     }
