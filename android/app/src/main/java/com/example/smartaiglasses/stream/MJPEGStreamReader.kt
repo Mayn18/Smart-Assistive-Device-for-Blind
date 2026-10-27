@@ -2,82 +2,70 @@ package com.example.smartaiglasses.stream
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.util.Log
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
 import java.net.URL
 
 class MJPEGStreamReader {
 
+    @Volatile private var activeConnection: HttpURLConnection? = null
+
     fun startStream(
         ip: String,
-        onFrame: (Bitmap) -> Unit,
-        onCommand: (String) -> Unit
+        onFrame: (Bitmap) -> Unit
     ) {
+        val connection = URL("http://$ip/stream").openConnection() as HttpURLConnection
+        connection.connectTimeout = 5000
+        connection.readTimeout = 10000
+        activeConnection = connection
 
-        val conn = URL("http://$ip/stream").openConnection()
+        try {
+            BufferedInputStream(connection.inputStream, 65536).use { input ->
+                val frame = ByteArrayOutputStream(65536)
+                var previous = -1
+                var capturingFrame = false
 
-        val input = BufferedInputStream(conn.getInputStream(), 65536)
+                while (!Thread.currentThread().isInterrupted) {
+                    val current = input.read()
+                    if (current == -1) break
 
-        val buffer = ByteArrayOutputStream(65536)
+                    if (!capturingFrame) {
+                        if (previous == 0xFF && current == 0xD8) {
+                            frame.reset()
+                            frame.write(0xFF)
+                            frame.write(0xD8)
+                            capturingFrame = true
+                        }
+                    } else {
+                        frame.write(current)
 
-        var prev = 0
-        var cur: Int
-
-        val markerBuffer = StringBuilder()
-
-        while (true) {
-
-            cur = input.read()
-
-            if (cur == -1) break
-
-            // Detect text markers
-            if (cur in 32..126) {
-                markerBuffer.append(cur.toChar())
-
-                if (markerBuffer.length > 32)
-                    markerBuffer.deleteCharAt(0)
-
-                val marker = markerBuffer.toString()
-
-                when {
-                    marker.contains("BTN:READ") -> {
-                        Log.d("ESPBTN", "READ")
-                        onCommand("READ")
-                        markerBuffer.clear()
+                        if (frame.size() > MAX_FRAME_BYTES) {
+                            frame.reset()
+                            capturingFrame = false
+                        } else if (previous == 0xFF && current == 0xD9) {
+                            val bytes = frame.toByteArray()
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                ?.let(onFrame)
+                            frame.reset()
+                            capturingFrame = false
+                        }
                     }
 
-                    marker.contains("BTN:CONT") -> {
-                        Log.d("ESPBTN", "CONT")
-                        onCommand("CONT")
-                        markerBuffer.clear()
-                    }
-
-                    marker.contains("BTN:STOP") -> {
-                        Log.d("ESPBTN", "STOP")
-                        onCommand("STOP")
-                        markerBuffer.clear()
-                    }
+                    previous = current
                 }
             }
-
-            if (prev == 0xFF && cur == 0xD8) {
-                buffer.reset()
-                buffer.write(0xFF)
-            }
-
-            buffer.write(cur)
-
-            if (prev == 0xFF && cur == 0xD9) {
-
-                val bytes = buffer.toByteArray()
-
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    ?.let { onFrame(it) }
-            }
-
-            prev = cur
+        } finally {
+            connection.disconnect()
+            if (activeConnection === connection) activeConnection = null
         }
+    }
+
+    fun stop() {
+        activeConnection?.disconnect()
+    }
+
+    private companion object {
+        const val MAX_FRAME_BYTES = 8 * 1024 * 1024
     }
 }

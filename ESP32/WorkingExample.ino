@@ -10,6 +10,13 @@
 #include "esp_wifi.h"
 #include "secrets.h"
 
+#ifndef AP_SSID
+#define AP_SSID "ESP32-CAM-READER"
+#endif
+#ifndef AP_PASSWORD
+#define AP_PASSWORD "replace-me"
+#endif
+
 #define BUTTON_IO13 13
 
 // -------- Button Timing --------
@@ -25,12 +32,10 @@ const unsigned long longPressTime = 800;
 bool lastState13 = HIGH;
 bool continuousMode = false;
 
-// -------- Marker Command --------
-const char* pendingCommand = NULL;
-
 // ---------- UDP ----------
 WiFiUDP udp;
 const int discoveryPort = 4210;
+WebSocketsServer eventServer(81);
 
 // ---------- Flash ----------
 #define FLASH_LED_PIN 4
@@ -109,14 +114,15 @@ void startCamera() {
     config.frame_size = FRAMESIZE_SXGA;
     config.jpeg_quality = 12;
     config.fb_count = 2;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    config.grab_mode = CAMERA_GRAB_LATEST;
   } else {
     config.frame_size = FRAMESIZE_VGA;
     config.jpeg_quality = 15;
     config.fb_count = 1;
+    config.fb_location = CAMERA_FB_IN_DRAM;
+    config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   }
-
-  config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.grab_mode = CAMERA_GRAB_LATEST;
 
   if(esp_camera_init(&config) != ESP_OK){
     Serial.println("Camera init failed");
@@ -154,18 +160,9 @@ void startCamera() {
 static esp_err_t stream_handler(httpd_req_t *req){
 
   httpd_resp_set_type(req, _STREAM_CT);
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 
   while(true){
-
-    // Inject command marker
-    if(pendingCommand != NULL){
-
-      httpd_resp_send_chunk(req, pendingCommand, strlen(pendingCommand));
-      pendingCommand = NULL;
-    }
-
     camera_fb_t * fb = esp_camera_fb_get();
 
     if(!fb){
@@ -175,18 +172,48 @@ static esp_err_t stream_handler(httpd_req_t *req){
 
     size_t hlen = snprintf(part_buf, 64, _PART_HDR, fb->len);
 
-    httpd_resp_send_chunk(req, _BOUNDARY, strlen(_BOUNDARY));
-    httpd_resp_send_chunk(req, part_buf, hlen);
-    httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
+    esp_err_t result = httpd_resp_send_chunk(req, _BOUNDARY, strlen(_BOUNDARY));
+    if(result == ESP_OK){
+      result = httpd_resp_send_chunk(req, part_buf, hlen);
+    }
+    if(result == ESP_OK){
+      result = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
+    }
 
     esp_camera_fb_return(fb);
+
+    if(result != ESP_OK){
+      return result;
+    }
 
     delay(30);
   }
 
-  
-
   return ESP_OK;
+}
+
+static esp_err_t health_handler(httpd_req_t *req){
+  const bool connected = WiFi.status() == WL_CONNECTED;
+  const String ip = (connected ? WiFi.localIP() : WiFi.softAPIP()).toString();
+  char response[192];
+  snprintf(response, sizeof(response),
+           "{\"name\":\"smart-assistive-reader\",\"version\":\"1.0.0\",\"stream\":\"/stream\",\"capture\":\"/capture\",\"events\":\"ws://%s:81\",\"wifi\":\"%s\",\"ip\":\"%s\"}",
+           ip.c_str(), connected ? "sta" : "ap", ip.c_str());
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t capture_handler(httpd_req_t *req){
+  camera_fb_t *fb = esp_camera_fb_get();
+  if(!fb){
+    return httpd_resp_send_500(req);
+  }
+
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  esp_err_t result = httpd_resp_send(req, (const char*)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  return result;
 }
 
 void startCameraServer(){
@@ -206,6 +233,22 @@ void startCameraServer(){
     stream_uri.user_ctx = NULL;
 
     httpd_register_uri_handler(server, &stream_uri);
+
+    httpd_uri_t health_uri = {
+      .uri = "/health",
+      .method = HTTP_GET,
+      .handler = health_handler,
+      .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &health_uri);
+
+    httpd_uri_t capture_uri = {
+      .uri = "/capture",
+      .method = HTTP_GET,
+      .handler = capture_handler,
+      .user_ctx = NULL
+    };
+    httpd_register_uri_handler(server, &capture_uri);
 
     Serial.println("Stream ready");
   }
@@ -228,7 +271,7 @@ void handleDiscovery(){
 
   if(strcmp(incoming,"WHO_IS_ESP32_CAM")==0){
 
-    IPAddress ip = WiFi.localIP();
+    IPAddress ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP();
 
     char response[32];
 
@@ -299,7 +342,7 @@ void handleButtons(){
     if(pressDuration >= longPressTime){
 
       Serial.println("STOP");
-      pendingCommand = "BTN:STOP";
+      eventServer.broadcastTXT("STOP");
       waitingForDouble = false;
       return;
     }
@@ -311,12 +354,12 @@ void handleButtons(){
       if(continuousMode){
 
         Serial.println("CONTINUOUS ON");
-        pendingCommand = "BTN:CONT";
+        eventServer.broadcastTXT("CONT");
 
       } else {
 
         Serial.println("CONTINUOUS OFF");
-        pendingCommand = "BTN:STOP";
+        eventServer.broadcastTXT("STOP");
       }
 
       waitingForDouble=false;
@@ -331,7 +374,7 @@ void handleButtons(){
   if(waitingForDouble && (now-lastReleaseTime)>doublePressTime){
 
     Serial.println("READ TEXT");
-    pendingCommand="BTN:READ";
+    eventServer.broadcastTXT("READ");
     waitingForDouble=false;
   }
 }
@@ -353,7 +396,7 @@ void setup(){
 
   if(!connectToWiFi()){
 
-    WiFi.softAP("ESP32-CAM","REDACTED");
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
   }
 
   setupPowerManagement();
@@ -368,6 +411,7 @@ void setup(){
   udp.begin(discoveryPort);
 
   startCameraServer();
+  eventServer.begin();
 
   Serial.println("System Ready");
 }
@@ -378,6 +422,7 @@ void loop(){
   handleDiscovery();
 
   handleButtons();
+  eventServer.loop();
 
   delay(1);
 }

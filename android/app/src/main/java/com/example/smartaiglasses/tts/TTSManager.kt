@@ -11,8 +11,8 @@ private const val TAG = "TTSManager"
 class TTSManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private var ttsActive = false
+    @Volatile private var ttsReady = false
+    @Volatile private var ttsActive = false
 
     init {
         tts = TextToSpeech(context) { status ->
@@ -65,6 +65,11 @@ class TTSManager(private val context: Context) {
     }
 
     fun isBusy(): Boolean = ttsActive
+
+    fun stop() {
+        tts?.stop()
+        ttsActive = false
+    }
 
     fun shutdown() {
         tts?.shutdown()

@@ -57,12 +57,6 @@ class OCRProcessor {
         return s
     }
 
-    fun clean(raw: String): String =
-        raw.replace(Regex("[|\\\\^~`<>{}\\[\\]]"), "")
-            .replace("\n", " ")
-            .replace(Regex("\\s{2,}"), " ")
-            .trim()
-
     fun close() {
         latinRec.close()
         devanagariRec.close()

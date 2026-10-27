@@ -1,40 +1,38 @@
-# AI Smart Reading Glasses
+# Smart Assistive Reader
 
-A low-cost wearable assistive system that helps visually impaired users read printed text using an ESP32-CAM and an Android application.
+A prototype that pairs an ESP32-CAM with an Android app to capture printed text, recognize it on-device, optionally translate it, and read it aloud.
 
-## Features
+## Current behavior
 
-- ESP32-CAM image streaming
-- OCR using Google ML Kit
-- Automatic language detection
-- Text-to-Speech
-- Wi-Fi communication
-- Lightweight wearable prototype
+- The ESP32-CAM serves an MJPEG feed at `/stream` and a still image at `/capture` over HTTP.
+- The Android app discovers the device by UDP, with `esp32cam.local` and the ESP32 soft-AP address as fallbacks.
+- The camera button sends `READ`, `CONT`, and `STOP` events over a WebSocket on port 81.
+- Android runs ML Kit text recognition and Android Text-to-Speech. Translation is optional and may need a model download.
 
-## Technologies
+This repository does not currently implement object detection, navigation assistance, voice commands, reading history, or a guided setup flow.
 
-- Kotlin
-- Android Studio
-- ESP32
-- Arduino Framework
-- Google ML Kit
-- Text-to-Speech
-- WebSockets
+## Hardware and setup
 
-## Hardware
+1. Use an ESP32-CAM board with an OV2640 camera and a supported Arduino ESP32 core.
+2. Copy `ESP32/secrets.h.example` to `ESP32/secrets.h` and set your Wi-Fi credentials. Keep `secrets.h` out of version control.
+3. Flash `ESP32/WorkingExample.ino` with the required ESP32 camera and WebSockets libraries.
+4. Open the `android/` directory in Android Studio and build/install the app.
+5. Put the phone and ESP32 on the same local network, or connect to the ESP32 soft AP if station-mode Wi-Fi is unavailable.
 
-- ESP32-CAM
-- OV2640 Camera
-- Li-ion Battery
-- Glasses Frame
+The app needs local network access. The current device endpoints use cleartext HTTP and unauthenticated WebSockets; use only a trusted local network. See [Security](docs/security.md) and [Protocol](docs/protocol.md).
 
-## Screenshots
+## Testing
 
-...
+From `android/` run:
 
-## Future Improvements
+```sh
+./gradlew testDebugUnitTest assembleDebug
+```
 
-- Object detection
-- Navigation assistance
-- Voice commands
-- Offline OCR
+The automated unit tests cover text cleanup and speech suppression. Camera streaming, Wi-Fi discovery, OCR quality, translation, and speech should also be checked on real hardware.
+
+## Limitations and safety
+
+OCR can be inaccurate, especially with blur, glare, small text, or poor lighting. Translation may require downloading a language model. Hardware and network behavior have not been validated across all ESP32-CAM boards and routers.
+
+This prototype is for stationary printed-text reading assistance only. It is not a mobility aid, navigation system, emergency device, or replacement for a white cane or trained mobility assistance.

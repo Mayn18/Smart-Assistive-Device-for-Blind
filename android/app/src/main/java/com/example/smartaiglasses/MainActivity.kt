@@ -7,6 +7,7 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.smartaiglasses.ocr.OCRProcessor
+import com.example.smartaiglasses.ocr.TextPolicy
 import com.example.smartaiglasses.stream.ESP32Discovery
 import com.example.smartaiglasses.stream.MJPEGStreamReader
 import com.example.smartaiglasses.translate.TranslationManager
@@ -18,8 +19,11 @@ import java.net.URL
 private const val TAG = "SmartGlasses"
 
 private const val FRAME_INTERVAL_MS = 500L
-private const val SPEECH_COOLDOWN_MS = 3000L
-private const val MIN_TEXT_LENGTH = 3
+private enum class ReadingMode {
+    IDLE,
+    READ_ONCE,
+    CONTINUOUS
+}
 
 class MainActivity : AppCompatActivity() {
 
@@ -34,22 +38,22 @@ class MainActivity : AppCompatActivity() {
     // Modules
     private lateinit var ttsManager: TTSManager
     private val ocrProcessor = OCRProcessor()
+    private val textPolicy = TextPolicy()
     private val translationManager = TranslationManager()
     private val streamReader = MJPEGStreamReader()
+    private val eventClient = DeviceEventClient()
 
     // Stream
     private var streamJob: Job? = null
+    private var discoveryJob: Job? = null
     private var espIP: String? = null
 
     // State
     private var lastFrameTime = 0L
-    private var lastSpeechTime = 0L
-    private var lastSpokenText = ""
 
     private val espDiscovery = ESP32Discovery()
 
-    @Volatile private var continuousMode = false
-    @Volatile private var readOnceMode = false
+    @Volatile private var readingMode = ReadingMode.IDLE
     @Volatile private var processingFrame = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,35 +73,29 @@ class MainActivity : AppCompatActivity() {
 
         btnRead.setOnClickListener {
 
-            readOnceMode = true
-            continuousMode = false
-
-            lastSpokenText = ""
-            lastSpeechTime = 0
+            readingMode = ReadingMode.READ_ONCE
+            textPolicy.reset()
 
             txtStatus.text = "Point at text and wait…"
         }
 
         btnContinuous.setOnClickListener {
 
-            continuousMode = true
-            readOnceMode = false
-
-            lastSpokenText = ""
-            lastSpeechTime = 0
+            readingMode = ReadingMode.CONTINUOUS
+            textPolicy.reset()
 
             txtStatus.text = "Continuous mode ON"
         }
 
         btnStop.setOnClickListener {
 
-            readOnceMode = false
-            continuousMode = false
+            readingMode = ReadingMode.IDLE
+            ttsManager.stop()
 
             txtStatus.text = "Stopped"
         }
 
-        lifecycleScope.launch {
+        discoveryJob = lifecycleScope.launch {
             discoverESP32()
         }
     }
@@ -107,10 +105,33 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
 
         streamJob?.cancel()
+        streamReader.stop()
+        eventClient.close()
 
         ttsManager.shutdown()
         ocrProcessor.close()
         translationManager.close()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (espIP != null && streamJob == null) {
+            startStream()
+        } else if (espIP == null && discoveryJob?.isActive != true) {
+            discoveryJob = lifecycleScope.launch { discoverESP32() }
+        }
+    }
+
+    override fun onStop() {
+        discoveryJob?.cancel()
+        discoveryJob = null
+        readingMode = ReadingMode.IDLE
+        streamJob?.cancel()
+        streamJob = null
+        streamReader.stop()
+        eventClient.close()
+        ttsManager.stop()
+        super.onStop()
     }
 
     // ESP32 DISCOVERY
@@ -128,7 +149,7 @@ class MainActivity : AppCompatActivity() {
             if (!canConnect(espIP!!)) {
 
                 // FINAL fallback → ESP AP mode
-                espIP = "10.60.140.253"
+                espIP = "192.168.4.1"
             }
         }
 
@@ -136,7 +157,9 @@ class MainActivity : AppCompatActivity() {
 
         txtStatus.text = "Connected: $espIP — press Read or Continuous"
 
-        startStream()
+        if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+            startStream()
+        }
     }
 
     private suspend fun canConnect(ip: String): Boolean = withContext(Dispatchers.IO) {
@@ -154,61 +177,44 @@ class MainActivity : AppCompatActivity() {
     // STREAM
 
     private fun startStream() {
+        val deviceIp = espIP ?: return
+
+        eventClient.connect(deviceIp) { command ->
+            runOnUiThread { handleDeviceCommand(command) }
+        }
 
         streamJob = lifecycleScope.launch(Dispatchers.IO) {
-
-            try {
-
-                streamReader.startStream(
-                    espIP!!,
-
-                    onFrame = { bitmap ->
-
-                        runOnUiThread {
-                            imageView.setImageBitmap(bitmap)
-                        }
-
+            while (isActive) {
+                try {
+                    streamReader.startStream(deviceIp) { bitmap ->
+                        runOnUiThread { imageView.setImageBitmap(bitmap) }
                         processFrame(bitmap)
-                    },
-
-                    onCommand = { cmd ->
-
-                        runOnUiThread {
-
-                            when (cmd) {
-
-                                "READ" -> {
-
-                                    readOnceMode = true
-                                    continuousMode = false
-                                    txtStatus.text = "ESP Button: Read"
-                                }
-
-                                "CONT" -> {
-
-                                    continuousMode = true
-                                    readOnceMode = false
-                                    txtStatus.text = "ESP Button: Continuous"
-                                }
-
-                                "STOP" -> {
-
-                                    continuousMode = false
-                                    readOnceMode = false
-                                    txtStatus.text = "ESP Button: Stop"
-                                }
-                            }
-                        }
                     }
-                )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Stream error ${e.message}")
+                }
 
-            } catch (e: Exception) {
+                if (isActive) delay(2000)
+            }
+        }
+    }
 
-                Log.e(TAG, "Stream error ${e.message}")
-
-                delay(2000)
-
-                startStream()
+    private fun handleDeviceCommand(command: String) {
+        when (command) {
+            "READ" -> {
+                readingMode = ReadingMode.READ_ONCE
+                txtStatus.text = "ESP Button: Read"
+            }
+            "CONT" -> {
+                readingMode = ReadingMode.CONTINUOUS
+                txtStatus.text = "ESP Button: Continuous"
+            }
+            "STOP" -> {
+                readingMode = ReadingMode.IDLE
+                ttsManager.stop()
+                txtStatus.text = "ESP Button: Stop"
             }
         }
     }
@@ -223,7 +229,7 @@ class MainActivity : AppCompatActivity() {
         if (now - lastFrameTime < FRAME_INTERVAL_MS) return
         lastFrameTime = now
 
-        if (!continuousMode && !readOnceMode) return
+        if (readingMode == ReadingMode.IDLE) return
         if (processingFrame) return
 
         processingFrame = true
@@ -242,7 +248,7 @@ class MainActivity : AppCompatActivity() {
 
                 processingFrame = false
 
-                if (readOnceMode) readOnceMode = false
+                if (readingMode == ReadingMode.READ_ONCE) readingMode = ReadingMode.IDLE
             }
         }
     }
@@ -252,28 +258,22 @@ class MainActivity : AppCompatActivity() {
     private suspend fun runOCR(bitmap: Bitmap) {
 
         val result = ocrProcessor.process(bitmap) ?: return
-        val cleaned = ocrProcessor.clean(result.text)
-        if (cleaned.length < MIN_TEXT_LENGTH) return
+        val cleaned = textPolicy.clean(result.text)
+        if (cleaned.length < 3) return
 
         runOnUiThread { txtStatus.text = "Found: ${cleaned.take(60)}" }
 
         val now = System.currentTimeMillis()
-        val same = cleaned == lastSpokenText
-        val cooldown = now - lastSpeechTime < SPEECH_COOLDOWN_MS
-
-        val shouldSpeak = when {
-            readOnceMode -> true
-            ttsManager.isBusy() -> false
-            same && cooldown -> false
-            else -> true
-        }
-
-        if (!shouldSpeak) return
+        if (!textPolicy.shouldSpeak(
+                cleaned,
+                now,
+                readingMode == ReadingMode.READ_ONCE,
+                ttsManager.isBusy()
+            )) return
 
         val finalText = translationManager.translateToEnglish(cleaned)
 
-        lastSpokenText = cleaned
-        lastSpeechTime = now
+        textPolicy.markSpoken(cleaned, now)
 
         runOnUiThread {
             txtStatus.text = "▶ ${finalText.take(60)}"
