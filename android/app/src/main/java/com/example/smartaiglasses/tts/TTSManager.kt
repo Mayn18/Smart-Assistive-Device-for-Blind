@@ -64,6 +64,25 @@ class TTSManager(private val context: Context) {
         )
     }
 
+    /**
+     * Speaks a short status cue (connection lost, nothing found) *after* whatever is already
+     * being spoken. [speak] flushes the queue, which is right for new text to read but would cut
+     * off the page the user is in the middle of hearing.
+     */
+    fun announce(text: String) {
+        if (!ttsReady) {
+            Log.w(TAG, "TTS not ready; cue dropped")
+            return
+        }
+
+        tts?.speak(
+            text,
+            TextToSpeech.QUEUE_ADD,
+            null,
+            "cue_${System.nanoTime()}"
+        )
+    }
+
     fun isBusy(): Boolean = ttsActive
 
     fun stop() {

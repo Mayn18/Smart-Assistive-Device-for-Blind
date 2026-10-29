@@ -31,7 +31,7 @@ From `android/` run:
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-The automated unit tests cover text cleanup, speech suppression, and WebSocket event parsing. The bundled OCR sample can be exercised on an Android device or emulator in Simulation mode. Camera streaming, Wi-Fi discovery, OCR quality, translation downloads, and speech output should also be checked on real hardware; host-side unit tests do not validate those integrations.
+The automated unit tests cover text cleanup, speech suppression, WebSocket event parsing, the reconnect/backoff logic for the button link, and the retry-until-text behaviour of a Read. The bundled OCR sample can be exercised on an Android device or emulator in Simulation mode. Camera streaming, Wi-Fi discovery, OCR quality, translation downloads, and speech output should also be checked on real hardware; host-side unit tests do not validate those integrations.
 
 Firmware can be compiled without a board using PlatformIO from the repository root:
 
@@ -40,9 +40,17 @@ cp -n ESP32/secrets.h.example ESP32/secrets.h
 pio run -e esp32cam
 ```
 
-The sample credentials are compile-only placeholders; replace them only in your ignored local `ESP32/secrets.h` before flashing.
+The sample credentials are compile-only placeholders; replace them only in your ignored local `ESP32/secrets.h` before flashing. The fallback access-point password must be 8 to 63 characters (the build fails otherwise) and should be changed from the example value: anyone who knows it can view the camera.
+
+The button logic (debounce, click / double-click / long-press timing, `millis()` wrap-around) is plain C++ and is tested without any board or Arduino toolchain, needing only a C++ compiler:
+
+```sh
+tests/firmware/run_tests.sh
+```
 
 ## Limitations and safety
+
+While the app is connected to the glasses it keeps the phone's screen awake, because the app stops reading when it leaves the foreground (a locked or timed-out screen ends the session). Running as a background service that survives a locked screen is not implemented yet.
 
 OCR can be inaccurate, especially with blur, glare, small text, or poor lighting. Translation may require downloading a language model. Hardware and network behavior have not been validated across all ESP32-CAM boards and routers.
 

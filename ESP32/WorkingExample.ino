@@ -9,6 +9,7 @@
 #include "esp_pm.h"
 #include "esp_wifi.h"
 #include "secrets.h"
+#include "GestureDetector.h"
 
 #ifndef AP_SSID
 #define AP_SSID "ESP32-CAM-READER"
@@ -17,20 +18,24 @@
 #define AP_PASSWORD "replace-me"
 #endif
 
+// WPA2 needs 8..63 characters. WiFi.softAP() rejects anything else and the fallback
+// network would silently never appear, so fail the build instead.
+static_assert(sizeof(AP_PASSWORD) - 1 >= 8 && sizeof(AP_PASSWORD) - 1 <= 63,
+              "AP_PASSWORD in secrets.h must be 8 to 63 characters");
+
 #define BUTTON_IO13 13
 
-// -------- Button Timing --------
-unsigned long pressStartTime = 0;
-unsigned long lastReleaseTime = 0;
-
-bool buttonPressed = false;
-bool waitingForDouble = false;
-
-const unsigned long doublePressTime = 350;
-const unsigned long longPressTime = 800;
-
-bool lastState13 = HIGH;
+// -------- Button gestures (logic and timing live in GestureDetector.h, host-tested) --------
+GestureDetector gestures;
 bool continuousMode = false;
+
+// -------- Reliability limits --------
+static const int kMaxConsecutiveCameraFailures = 100;     // ~3 s without a frame
+static const unsigned long kWifiLostRestartMs = 30000UL;  // reboot if the router stays gone
+static const unsigned long kWifiConnectTimeoutMs = 7500UL; // per candidate network
+bool stationMode = false;
+bool wifiLost = false;
+unsigned long wifiLostSinceMs = 0;
 
 // ---------- UDP ----------
 WiFiUDP udp;
@@ -77,8 +82,8 @@ void setupPowerManagement() {
 }
 
 // ---------- Camera ----------
-void startCamera() {
-  
+// Returns false (instead of halting) so setup() can retry and then reboot.
+bool startCamera() {
 
   camera_config_t config = {};
 
@@ -124,12 +129,17 @@ void startCamera() {
     config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   }
 
-  if(esp_camera_init(&config) != ESP_OK){
-    Serial.println("Camera init failed");
-    esp_deep_sleep_start();
+  const esp_err_t initResult = esp_camera_init(&config);
+  if(initResult != ESP_OK){
+    Serial.printf("Camera init failed: 0x%x\n", (unsigned)initResult);
+    return false;
   }
 
   sensor_t * s = esp_camera_sensor_get();
+  if(s == NULL){
+    Serial.println("Camera sensor handle missing");
+    return false;
+  }
   s->set_brightness(s, 2);     // -2 to 2
   s->set_contrast(s, -2);       // -2 to 2
   s->set_saturation(s, 0);     // -2 to 2
@@ -154,6 +164,21 @@ void startCamera() {
   s->set_colorbar(s, 0);       // 0 = disable , 1 = enable
 
   Serial.println("Camera ready");
+  return true;
+}
+
+// There is no screen or speaker on the glasses, so a camera fault is signalled by
+// blinking the flash LED (visible to a helper), then rebooting to try again.
+static void signalCameraFailureAndRestart(){
+  Serial.println("Camera unavailable - restarting");
+  for(int i=0;i<5;i++){
+    digitalWrite(FLASH_LED_PIN,HIGH);
+    delay(80);
+    digitalWrite(FLASH_LED_PIN,LOW);
+    delay(120);
+  }
+  delay(2000);
+  ESP.restart();
 }
 
 // ---------- Stream Handler ----------
@@ -162,13 +187,23 @@ static esp_err_t stream_handler(httpd_req_t *req){
   httpd_resp_set_type(req, _STREAM_CT);
   httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 
+  int cameraFailures = 0;
+
   while(true){
     camera_fb_t * fb = esp_camera_fb_get();
 
     if(!fb){
+      // The server has a single worker task: spinning here forever would also block
+      // /health and every reconnect. A camera that stays silent needs a reboot.
+      if(++cameraFailures >= kMaxConsecutiveCameraFailures){
+        Serial.println("Camera stopped delivering frames - restarting");
+        delay(100);
+        ESP.restart();
+      }
       delay(30);
       continue;
     }
+    cameraFailures = 0;
 
     size_t hlen = snprintf(part_buf, 64, _PART_HDR, fb->len);
 
@@ -220,12 +255,20 @@ void startCameraServer(){
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
+  // One worker task serves every request. Without timeouts a client that stalls
+  // mid-transfer holds it forever; with LRU purge a dead socket is evicted when a
+  // new client needs a slot, so reconnecting always works.
+  config.recv_wait_timeout = 5;
+  config.send_wait_timeout = 5;
+  config.lru_purge_enable = true;
 
   httpd_handle_t server = NULL;
 
   if(httpd_start(&server, &config) == ESP_OK){
 
-    httpd_uri_t stream_uri;
+    // Zero-initialise: newer ESP-IDF versions add fields (is_websocket, ...) that are
+    // read by the server and must not be left as stack garbage.
+    httpd_uri_t stream_uri = {};
 
     stream_uri.uri = "/stream";
     stream_uri.method = HTTP_GET;
@@ -273,10 +316,15 @@ void handleDiscovery(){
 
     IPAddress ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP();
 
+    // An interface that has no address yet (router just dropped, AP not up) reads
+    // 0.0.0.0. Advertising it would send the phone to a dead address; stay silent so
+    // it falls through to its other candidates instead.
+    if(ip[0]==0 && ip[1]==0 && ip[2]==0 && ip[3]==0) return;
+
     char response[32];
 
-    sprintf(response,"ESP32_CAM:%d.%d.%d.%d",
-            ip[0],ip[1],ip[2],ip[3]);
+    snprintf(response,sizeof(response),"ESP32_CAM:%d.%d.%d.%d",
+             ip[0],ip[1],ip[2],ip[3]);
 
     udp.beginPacket(udp.remoteIP(),udp.remotePort());
     udp.write((uint8_t*)response,strlen(response));
@@ -288,8 +336,9 @@ void handleDiscovery(){
 bool connectToWiFi(){
 
   int n = WiFi.scanNetworks();
+  bool connected = false;
 
-  for(int i=0;i<networkCount;i++){
+  for(int i=0;i<networkCount && !connected;i++){
 
     for(int j=0;j<n;j++){
 
@@ -297,11 +346,9 @@ bool connectToWiFi(){
 
         WiFi.begin(networks[i].ssid,networks[i].password);
 
-        for(int k=0;k<15;k++){
-
-          if(WiFi.status()==WL_CONNECTED) break;
-
-          delay(500);
+        const unsigned long startedAt = millis();
+        while(WiFi.status()!=WL_CONNECTED && millis()-startedAt < kWifiConnectTimeoutMs){
+          delay(100);
         }
 
         if(WiFi.status()==WL_CONNECTED){
@@ -312,70 +359,80 @@ bool connectToWiFi(){
           Serial.print("IP Address: ");
           Serial.println(WiFi.localIP());
 
-          return true;
+          connected = true;
+        } else {
+          WiFi.disconnect();  // give up on this network before trying the next one
         }
+
+        break;  // one attempt per configured network, even if it is listed twice
       }
     }
   }
 
-  return false;
+  WiFi.scanDelete();  // scan results were never released before
+  return connected;
+}
+
+// If the router disappears for good, reboot: setup() then re-scans and, if the router
+// is still gone, falls back to the access point. Before this the glasses stayed
+// unreachable until someone power-cycled them.
+void watchWifi(){
+
+  if(!stationMode) return;
+
+  const unsigned long now = millis();
+
+  if(WiFi.status()==WL_CONNECTED){
+    wifiLost = false;
+    return;
+  }
+
+  if(!wifiLost){
+    wifiLost = true;
+    wifiLostSinceMs = now;
+  } else if(now - wifiLostSinceMs >= kWifiLostRestartMs){
+    Serial.println("Wi-Fi lost - restarting");
+    ESP.restart();
+  }
 }
 
 // ---------- Buttons ----------
+// Event names are the wire protocol (docs/protocol.md): READ, CONT, STOP over WebSocket :81.
+// Debouncing, click/double-click/long-press timing and millis() wrap-around are handled
+// by GestureDetector, which is unit-tested on a normal computer (tests/firmware).
 void handleButtons(){
 
-  bool state = digitalRead(BUTTON_IO13);
-  unsigned long now = millis();
+  const Gesture gesture = gestures.update(digitalRead(BUTTON_IO13) == LOW, millis());
 
-  if(state == LOW && !buttonPressed){
+  switch(gesture){
 
-    buttonPressed = true;
-    pressStartTime = now;
-  }
+    case Gesture::Read:
+      Serial.println("READ TEXT");
+      eventServer.broadcastTXT("READ");
+      break;
 
-  if(state == HIGH && buttonPressed){
-
-    buttonPressed = false;
-
-    unsigned long pressDuration = now - pressStartTime;
-
-    if(pressDuration >= longPressTime){
-
-      Serial.println("STOP");
-      eventServer.broadcastTXT("STOP");
-      waitingForDouble = false;
-      return;
-    }
-
-    if(waitingForDouble && (now-lastReleaseTime)<doublePressTime){
-
+    case Gesture::ToggleContinuous:
       continuousMode = !continuousMode;
-
       if(continuousMode){
-
         Serial.println("CONTINUOUS ON");
         eventServer.broadcastTXT("CONT");
-
       } else {
-
         Serial.println("CONTINUOUS OFF");
         eventServer.broadcastTXT("STOP");
       }
+      break;
 
-      waitingForDouble=false;
+    case Gesture::Stop:
+      // Reset the local flag as well: previously a long press sent STOP but left this
+      // true, so the next double-click "turned continuous mode off" and the user had
+      // to double-click twice to start it again.
+      continuousMode = false;
+      Serial.println("STOP");
+      eventServer.broadcastTXT("STOP");
+      break;
 
-    } else {
-
-      waitingForDouble=true;
-      lastReleaseTime=now;
-    }
-  }
-
-  if(waitingForDouble && (now-lastReleaseTime)>doublePressTime){
-
-    Serial.println("READ TEXT");
-    eventServer.broadcastTXT("READ");
-    waitingForDouble=false;
+    case Gesture::None:
+      break;
   }
 }
 
@@ -389,14 +446,32 @@ void setup(){
   pinMode(FLASH_LED_PIN,OUTPUT);
   pinMode(BUTTON_IO13,INPUT_PULLUP);
 
-  startCamera();
+  // Retry, then reboot: a transient fault (brown-out, loose ribbon cable) used to put the
+  // board into deep sleep with no wake source, bricking it until a manual power cycle.
+  bool cameraOk = false;
+  for(int attempt=1; attempt<=3 && !cameraOk; attempt++){
+    cameraOk = startCamera();
+    if(!cameraOk){
+      esp_camera_deinit();
+      delay(500);
+    }
+  }
+  if(!cameraOk) signalCameraFailureAndRestart();
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
 
-  if(!connectToWiFi()){
+  stationMode = connectToWiFi();
 
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
+  if(!stationMode){
+
+    if(strcmp(AP_PASSWORD,"replace-me")==0 || strcmp(AP_PASSWORD,"CHANGE_ME_8_CHARS_MIN")==0){
+      Serial.println("WARNING: AP_PASSWORD is a published placeholder - anyone can join the "
+                     "fallback network and view the camera. Set your own in secrets.h.");
+    }
+    if(!WiFi.softAP(AP_SSID, AP_PASSWORD)){
+      Serial.println("Failed to start fallback access point");
+    }
   }
 
   setupPowerManagement();
@@ -423,6 +498,7 @@ void loop(){
 
   handleButtons();
   eventServer.loop();
+  watchWifi();
 
   delay(1);
 }
