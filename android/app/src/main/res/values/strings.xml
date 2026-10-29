@@ -25,4 +25,8 @@
     <string name="speaking_recognized_text">Speaking recognized text (translation unavailable): %1$s</string>
     <string name="stream_retrying">ESP32 stream unavailable; retrying…</string>
     <string name="no_text_detected">No readable text detected in this image.</string>
+    <!-- Spoken aloud as well as shown: the person using the glasses may never look at the screen. -->
+    <string name="button_link_connected">Camera button connected.</string>
+    <string name="button_link_lost">Camera button connection lost. Reconnecting.</string>
+    <string name="read_no_text_spoken">No text found. Hold the page steady and press Read again.</string>
 </resources>

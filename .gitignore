@@ -16,3 +16,23 @@ local.properties
 
 ESP32/secrets.h
 .pio
+
+# The patterns above are anchored to the repository root, but the Android project lives in
+# android/, so they never matched. These match at any depth.
+**/.idea/caches/
+**/.idea/libraries/
+**/.idea/modules.xml
+**/.idea/workspace.xml
+**/.idea/navEditor.xml
+**/.idea/assetWizardSettings.xml
+**/build/
+.kotlin/
+
+# Signing material and service credentials must never be committed.
+*.jks
+*.keystore
+keystore.properties
+google-services.json
+
+# Host-side firmware test binaries
+tests/firmware/build/

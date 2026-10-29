@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.ImageView
@@ -145,6 +146,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopSources() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         streamJob?.cancel()
         streamJob = null
         simulationJob?.cancel()
@@ -251,7 +253,12 @@ class MainActivity : AppCompatActivity() {
         val deviceIp = espIP ?: return
         if (streamJob?.isActive == true) return
 
-        eventClient.connect(deviceIp) { command ->
+        // While connected to the glasses the phone is usually set down or pocketed. When the screen
+        // timed out, onStop() stopped the stream and reading with no sound, so the person was left
+        // waiting on a silent app. Keep the screen awake for as long as the device is in use.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        eventClient.connect(deviceIp, onConnectionChanged = ::onButtonLinkChanged) { command ->
             runOnUiThread { handleDeviceCommand(command) }
         }
 
@@ -274,6 +281,15 @@ class MainActivity : AppCompatActivity() {
                 if (isActive) delay(2000L)
             }
         }
+    }
+
+    /** The camera's physical button link came up or dropped. Said aloud, not just shown. */
+    private fun onButtonLinkChanged(connected: Boolean) {
+        val message = getString(
+            if (connected) R.string.button_link_connected else R.string.button_link_lost
+        )
+        txtStatus.text = message
+        ttsManager.announce(message)
     }
 
     private fun handleDeviceCommand(command: DeviceEventCommand) {
@@ -318,11 +334,12 @@ class MainActivity : AppCompatActivity() {
 
         val startedAtRevision = readingMode.revision
         processingJob = lifecycleScope.launch {
+            var foundText = false
             try {
                 if (readingMode.revision == startedAtRevision &&
                     readingMode.mode != ReadingMode.IDLE
                 ) {
-                    runOCR(bitmap, startedAtRevision)
+                    foundText = runOCR(bitmap, startedAtRevision)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -335,25 +352,37 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
             } finally {
-                readingMode.finishReadOnce(startedAtRevision)
+                // A Read keeps trying on the next frames until text is found; only after the last
+                // empty attempt does it end, and then the person is told (they may never look at
+                // the screen, so a silent end looked exactly like a broken app).
+                val gaveUp = readingMode.finishReadAttempt(startedAtRevision, foundText)
+                if (gaveUp) {
+                    txtStatus.text = getString(R.string.no_text_detected)
+                    ttsManager.announce(getString(R.string.read_no_text_spoken))
+                }
                 processingJob = null
                 processingFrame.set(false)
             }
         }
     }
 
-    private suspend fun runOCR(bitmap: Bitmap, startedAtRevision: Long) {
+    /**
+     * Recognises text in [bitmap] and speaks it when the policy allows.
+     * Returns true when readable text was found (whether or not it was spoken), false when this
+     * frame had none. Stale work (the mode changed meanwhile) reports true so nothing retries it.
+     */
+    private suspend fun runOCR(bitmap: Bitmap, startedAtRevision: Long): Boolean {
         val result = ocrProcessor.process(bitmap)
         if (readingMode.revision != startedAtRevision ||
             readingMode.mode == ReadingMode.IDLE
-        ) return
+        ) return true
         if (result == null) {
             txtStatus.text = getString(R.string.no_text_detected)
-            return
+            return false
         }
 
         val cleaned = textPolicy.clean(result.text)
-        if (cleaned.length < 3) return
+        if (cleaned.length < 3) return false
 
         txtStatus.text = getString(R.string.found_text, cleaned.take(60))
 
@@ -363,7 +392,7 @@ class MainActivity : AppCompatActivity() {
                 now,
                 readingMode.mode == ReadingMode.READ_ONCE,
                 ttsManager.isBusy()
-            )) return
+            )) return true
 
         var translationFailed = false
         val finalText = try {
@@ -379,7 +408,7 @@ class MainActivity : AppCompatActivity() {
         currentCoroutineContext().ensureActive()
         if (readingMode.revision != startedAtRevision ||
             readingMode.mode == ReadingMode.IDLE
-        ) return
+        ) return true
 
         textPolicy.markSpoken(cleaned, now)
         txtStatus.text = getString(
@@ -388,5 +417,6 @@ class MainActivity : AppCompatActivity() {
         )
         ttsManager.speak(finalText)
         imageView.setImageBitmap(BoundingBoxDrawer.draw(bitmap, result))
+        return true
     }
 }
